@@ -1,0 +1,130 @@
+name: Release & Publish
+
+# Triggered by pushing a semver tag, e.g.:
+#   git tag v0.2.0 && git push origin v0.2.0
+#
+# It re-runs the full CI pipeline (lint + tests on every supported Python)
+# and only then builds and publishes:
+#   * GitHub Release with changelog notes extracted from the tag message
+#   * sdist + wheel to PyPI via Trusted Publishing (OIDP) — no API token
+#     secret required; configure the pending publisher on PyPI once.
+#
+# Required repository settings:
+#   Settings → Secrets and variables → Actions does NOT need a PYPI_TOKEN
+#   if you use Trusted Publishing (recommended). Otherwise add a
+#   pypi-api-token secret and swap the publishing step accordingly.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"   # v1.2.3, v1.2.3rc1 ...
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    # Reuse the full CI pipeline (lint → tests → build). publish.yml is only
+    # triggered by version tags, so no inputs are needed here.
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  build:
+    name: Build distribution
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Guard — tag version must match pyproject.toml version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(python - <<'EOF'
+          import tomllib, pathlib
+          print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])
+          EOF
+          )
+          echo "tag=$TAG package=$PKG"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::Tag v$TAG does not match pyproject.toml version $PKG. Bump the version first."
+            exit 1
+          fi
+
+      - name: Build sdist + wheel
+        run: |
+          pip install --upgrade build
+          python -m build
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          path: dist/*
+
+  github-release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the release + upload assets
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            ## singularity-client ${{ github.ref_name }}
+
+            Zero-dependency (stdlib-only) Python client for the Singularity App REST API v2.
+
+            See the [changelog](https://github.com/${{ github.repository }}/releases) and
+            [docs](https://github.com/${{ github.repository }}/tree/main/docs) for details.
+
+  publish:
+    name: Publish to PyPI
+    needs: [build, github-release]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/singularity-client
+    permissions:
+      id-token: write   # IMPORTANT: required for PyPI Trusted Publishing (OIDC)
+      contents: read
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install twine
+        run: pip install --upgrade twine
+
+      - name: Verify distributions
+        run: twine check dist/*
+
+      # Recommended: Trusted Publishing (no secret). Requires registering a
+      # "pending publisher" on PyPI for project `singularity-client` bound to
+      # this repo + workflow file (.github/workflows/publish.yml).
+      - name: Publish to PyPI (trusted publishing / OIDC)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
