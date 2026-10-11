@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "singularity-client"
+version = "0.1.0"
+description = "Zero-dependency (stdlib-only) Python client for the Singularity App REST API v2 (projects, tasks, habits, kanban, tags, time stats, batch)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "singularity-client contributors" }]
+keywords = ["singularity", "stdlib", "no-dependencies", "todo", "tasks", "habits", "kanban", "rest", "api", "client", "openapi"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Scheduling",
+]
+dependencies = []  # pure standard library -- no runtime dependencies
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]  # tests use stdlib http.server only
+
+[tool.setuptools.packages.find]
+include = ["singularity_client*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# -p no:libtmux guards against a broken third-party pytest plugin (libtmux)
+# auto-loading in some environments; it is never required by this suite.
+addopts = "-q -p no:libtmux"

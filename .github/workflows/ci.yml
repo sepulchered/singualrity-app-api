@@ -1,0 +1,112 @@
+name: CI
+
+# Runs on every push and pull request: builds the package and executes the
+# full test suite across the supported Python versions.
+# Publishing (PyPI + GitHub Release) happens only for version tags v*.*.*
+# and is gated on this workflow passing (see publish.yml / needs: ci).
+
+on:
+  push:
+    branches: [main, master]
+    # Also run standalone when a release tag is pushed (publish.yml reuses
+    # this file as a callable workflow; the tag push additionally triggers it).
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+  pull_request:
+  workflow_call: {}   # reusable entrypoint invoked by publish.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Syntax & stdlib-only check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile all sources (fast syntax gate)
+        run: python -m compileall -q singularity_client tests
+
+      - name: Verify zero runtime dependencies (stdlib only)
+        run: |
+          python - <<'EOF'
+          import pathlib, sys, ast
+
+          stdlib = set(sys.stdlib_module_names)
+          local = {"singularity_client"}
+          offenders = []
+          root = pathlib.Path("singularity_client")
+          for py in root.rglob("*.py"):
+              tree = ast.parse(py.read_text(), filename=str(py))
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Import):
+                      mods = [a.name.split(".")[0] for a in node.names]
+                  elif isinstance(node, ast.ImportFrom):
+                      mods = [] if node.level else [(node.module or "").split(".")[0]]
+                  else:
+                      continue
+                  for m in mods:
+                      if m and m not in stdlib and m not in local:
+                          offenders.append(f"{py}: {m}")
+          if offenders:
+              print("Non-stdlib imports found:")
+              print("\n".join(offenders))
+              sys.exit(1)
+          print("OK: singularity_client imports only the Python standard library.")
+          EOF
+
+  tests:
+    name: Tests (Python ${{ matrix.python-version }})
+    needs: lint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The library supports >= 3.9; we test the oldest and newest
+        # supported interpreters plus everything in between.
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install (dev extra = pytest only; runtime deps must stay empty)
+        run: python -m pip install --upgrade pip && pip install -e ".[dev]"
+
+      - name: Run test suite
+        run: pytest -v
+
+  build:
+    name: Build distribution
+    needs: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist + wheel
+        run: |
+          pip install --upgrade build twine
+          python -m build
+          twine check dist/*
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          retention-days: 7
